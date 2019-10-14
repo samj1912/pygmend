@@ -10,8 +10,24 @@ from pydocstyle.utils import pairwise
 nltk.download("punkt")
 SENT_TOKENIZER = nltk.data.load("tokenizers/punkt/english.pickle")
 LEADING_SPACE = re.compile(r"^(\s+)")
-LEADING_WORD = re.compile("(\w+)")
-TAB_SIZE = 4
+LEADING_WORD = re.compile("(.+):")
+TAB_SIZE = " " * 4
+
+ARG_START = re.compile(r"^\s*\*{0,2}\w+\s*(\(.+?\)\s*)?:.*")
+RAISES_START = re.compile(r"^\s*\w+\s*:.*")
+
+SectionContext = namedtuple(
+    "SectionContext",
+    (
+        "section_name",
+        "previous_line",
+        "line",
+        "following_lines",
+        "original_index",
+        "is_last_section",
+    ),
+)
+
 
 GOOGLE_SECTION_NAMES = (
     "Args",
@@ -53,15 +69,15 @@ def get_leading_words(line):
     """
     match = LEADING_WORD.match(line.strip())
     if match is not None:
-        return match.group()
+        return match.group(1)
 
 
-def get_leading_space(line: str) -> int:
-    line = line.replace("\t", " " * TAB_SIZE)
+def get_leading_space(line: str) -> str:
+    line = line.replace("\t", TAB_SIZE)
     match = LEADING_SPACE.match(line)
     if match:
-        return len(match.group(1))
-    return 0
+        return match.group(1)
+    return ""
 
 
 def fix_function(definition: Function, line_length=79):
@@ -81,12 +97,17 @@ def fix_function(definition: Function, line_length=79):
             shortened_summary = summary
         rest_of_summary = ""
     shortened_summary = shortened_summary.capitalize()
-    rest = rest_of_summary + "\n" + docstring[len(lines[0]) :]
+    rest = rest_of_summary + "\n" + docstring[len(shortened_summary) :]
     if rest.strip():
         sections = split_sections(rest.strip())
     else:
         sections = {}
-    formatters = {"args": format_general_section, "description": format_description}
+    formatters = {
+        "args": format_general_section,
+        "description": format_description,
+        "args": format_args_section,
+        "raises": format_raises_section,
+    }
     no_format = {"example", "examples"}
     output_sections = []
     for section, content in sections.items():
@@ -97,14 +118,12 @@ def fix_function(definition: Function, line_length=79):
             content = formatter(section, content, start_indent, line_length)
         if section != "Description":
             section_content = "{indent}{section}:\n{content}".format(
-                indent=" " * start_indent, section=section, content=content
+                indent=start_indent, section=section, content=content
             )
         else:
-            section_content = content.capitalize()
+            section_content = content
         output_sections.append(section_content)
-    print(
-        "{indent}{summary}".format(indent=" " * start_indent, summary=shortened_summary)
-    )
+    print("{indent}{summary}".format(indent=start_indent, summary=shortened_summary))
     print("")
     for section in output_sections:
         print(section)
@@ -113,24 +132,80 @@ def fix_function(definition: Function, line_length=79):
 
 
 def format_description(_, content, start_indent, line_length):
-    indent = " " * (start_indent)
+    indent = start_indent
     wrapper = textwrap.TextWrapper(
         width=line_length, initial_indent=indent, subsequent_indent=indent
     )
-    return "\n".join(wrapper.wrap(content)).capitalize()
+    output = []
+    for paragraph in content.split("\n\n"):
+        paragraph = paragraph.strip()
+        if paragraph:
+            output.append(
+                "\n".join(filter(lambda x: bool(x.strip()), wrapper.wrap(paragraph)))
+            )
+    return "\n\n".join(output)
+
+
+def format_args_section(section, content, start_indent, line_length):
+    lines = content.splitlines()
+    args = []
+    args_start = []
+    for i, line in enumerate(lines):
+        if ARG_START.match(line):
+            args_start.append(i)
+
+    for start, end in zip(args_start, args_start[1:] + [None]):
+        args.append("\n".join(lines[start:end]))
+    wrapper = textwrap.TextWrapper(
+        width=line_length,
+        initial_indent=start_indent + TAB_SIZE,
+        subsequent_indent=start_indent + TAB_SIZE * 2,
+    )
+    output = []
+    for arg in args:
+        output.append("\n".join(wrapper.wrap(arg)))
+    return "\n".join(output)
+
+
+def format_raises_section(section, content, start_indent, line_length):
+    lines = content.splitlines()
+    args = []
+    args_start = []
+    for i, line in enumerate(lines):
+        if RAISES_START.match(line):
+            args_start.append(i)
+
+    for start, end in zip(args_start, args_start[1:] + [None]):
+        args.append("\n".join(lines[start:end]))
+    wrapper = textwrap.TextWrapper(
+        width=line_length,
+        initial_indent=start_indent + TAB_SIZE,
+        subsequent_indent=start_indent + TAB_SIZE * 2,
+    )
+    output = []
+    for arg in args:
+        output.append("\n".join(wrapper.wrap(arg)))
+    return "\n".join(output)
 
 
 def format_general_section(section, content, start_indent, line_length):
-    indent = " " * (start_indent + TAB_SIZE)
+    indent = start_indent + TAB_SIZE
     wrapper = textwrap.TextWrapper(
         width=line_length, initial_indent=indent, subsequent_indent=indent
     )
-    return "\n".join(wrapper.wrap(content))
+    output = []
+    for paragraph in content.split("\n\n"):
+        paragraph = paragraph.strip()
+        if paragraph:
+            output.append(
+                "\n".join(filter(lambda x: bool(x.strip()), wrapper.wrap(paragraph)))
+            )
+    return "\n\n".join(output)
 
 
 def format_exception(content, start_indent):
     output = []
-    indent = " " * (start_indent + TAB_SIZE)
+    indent = start_indent + TAB_SIZE
     for line in content.splitlines():
         line = line.strip()
         line = f"{indent}{line}"
@@ -145,24 +220,12 @@ def split_sections(docstring):
 
     def _suspected_as_section(_line):
         result = get_leading_words(_line.lower())
-        return result in lower_section_names
+        return result in lower_section_names or _line.endswith(":")
 
     # Finding our suspects.
     suspected_section_indices = [
         i for i, line in enumerate(lines) if _suspected_as_section(line)
     ]
-
-    SectionContext = namedtuple(
-        "SectionContext",
-        (
-            "section_name",
-            "previous_line",
-            "line",
-            "following_lines",
-            "original_index",
-            "is_last_section",
-        ),
-    )
 
     # First - create a list of possible contexts. Note that the
     # `following_lines` member is until the end of the docstring.
@@ -203,7 +266,6 @@ def split_sections(docstring):
 
 
 def is_blank(string: str) -> bool:
-    """Return True iff the string contains only whitespaces."""
     return not string.strip()
 
 
@@ -240,7 +302,7 @@ def is_docstring_section(context):
 
     section_suffix_is_only_colon = section_name_suffix == ":"
 
-    punctuation = [",", ";", ".", "-", "\\", "/", "]", "}", ")"]
+    punctuation = [".", "-", "\\", "/", "]", "}", ")"]
     prev_line_ends_with_punctuation = any(
         context.previous_line.strip().endswith(x) for x in punctuation
     )
@@ -249,21 +311,6 @@ def is_docstring_section(context):
         is_blank(section_name_suffix) or section_suffix_is_only_colon
     )
 
-    prev_line_looks_like_end_of_paragraph = prev_line_ends_with_punctuation or is_blank(
-        context.previous_line
-    )
+    prev_line_looks_like_end_of_paragraph = is_blank(context.previous_line) or prev_line_ends_with_punctuation
 
     return this_line_looks_like_a_section_name and prev_line_looks_like_end_of_paragraph
-
-
-"""
-Docstring:
-    Title:
-        Top line: Long - segment - continuation
-    Description:
-        continuation
-        blank line
-    Args:
-        name (type): Description
-
-"""
