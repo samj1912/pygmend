@@ -66,10 +66,10 @@ def get_leading_space(line: str) -> int:
 
 def fix_function(definition: Function, line_length=79):
     docstring: str = definition.docstring
-    lead_space: int = get_leading_space(definition.source)
+    start_indent = get_leading_space(definition.source) + TAB_SIZE
     docstring = docstring[3:-3].strip()
-    lines: List[str] = docstring.splitlines()
-    summary, *_ = SENT_TOKENIZER.tokenize(docstring)
+    lines = docstring.splitlines()
+    summary, *_ = SENT_TOKENIZER.tokenize(lines[0])
     if len(summary) > line_length - 1:
         shortened_summary = summary[: line_length - 3]
         shortened_summary += "..."
@@ -81,12 +81,61 @@ def fix_function(definition: Function, line_length=79):
             shortened_summary = summary
         rest_of_summary = ""
     shortened_summary = shortened_summary.capitalize()
-    rest = rest_of_summary + docstring[len(summary) :]
+    rest = rest_of_summary + "\n" + docstring[len(lines[0]) :]
     if rest.strip():
-        sections = list(split_sections(rest.strip()))
+        sections = split_sections(rest.strip())
     else:
-        sections = []
-    return shortened_summary, sections
+        sections = {}
+    formatters = {"args": format_general_section, "description": format_description}
+    no_format = {"example", "examples"}
+    output_sections = []
+    for section, content in sections.items():
+        if section.lower() in no_format:
+            content = format_exception(content, start_indent)
+        else:
+            formatter = formatters.get(section.lower(), format_general_section)
+            content = formatter(section, content, start_indent, line_length)
+        if section != "Description":
+            section_content = "{indent}{section}:\n{content}".format(
+                indent=" " * start_indent, section=section, content=content
+            )
+        else:
+            section_content = content.capitalize()
+        output_sections.append(section_content)
+    print(
+        "{indent}{summary}".format(indent=" " * start_indent, summary=shortened_summary)
+    )
+    print("")
+    for section in output_sections:
+        print(section)
+        print("")
+    return (1, [])
+
+
+def format_description(_, content, start_indent, line_length):
+    indent = " " * (start_indent)
+    wrapper = textwrap.TextWrapper(
+        width=line_length, initial_indent=indent, subsequent_indent=indent
+    )
+    return "\n".join(wrapper.wrap(content)).capitalize()
+
+
+def format_general_section(section, content, start_indent, line_length):
+    indent = " " * (start_indent + TAB_SIZE)
+    wrapper = textwrap.TextWrapper(
+        width=line_length, initial_indent=indent, subsequent_indent=indent
+    )
+    return "\n".join(wrapper.wrap(content))
+
+
+def format_exception(content, start_indent):
+    output = []
+    indent = " " * (start_indent + TAB_SIZE)
+    for line in content.splitlines():
+        line = line.strip()
+        line = f"{indent}{line}"
+        output.append(line)
+    return "\n".join(output)
 
 
 def split_sections(docstring):
@@ -138,19 +187,19 @@ def split_sections(docstring):
     if description_end != 0:
         contexts = [
             SectionContext(
-                "Description", "", lines[0], lines[1:description_end], 0, False
+                "Description", "", lines[0], lines[1:description_end], -1, False
             )
         ] + contexts
 
     # Now we shall trim the `following lines` field to only reach the
     # next section name.
+    sections = {}
     for a, b in pairwise(contexts, None):
         end = b and b.original_index
-        content = "\n".join(
-            filter(bool, map(str.strip, lines[a.original_index + 1 : end]))
-        )
+        content = "\n".join(map(str.strip, lines[a.original_index + 1 : end]))
         if content:
-            yield (a.section_name.capitalize(), content)
+            sections[a.section_name.capitalize()] = content
+    return sections
 
 
 def is_blank(string: str) -> bool:
@@ -205,3 +254,16 @@ def is_docstring_section(context):
     )
 
     return this_line_looks_like_a_section_name and prev_line_looks_like_end_of_paragraph
+
+
+"""
+Docstring:
+    Title:
+        Top line: Long - segment - continuation
+    Description:
+        continuation
+        blank line
+    Args:
+        name (type): Description
+
+"""
